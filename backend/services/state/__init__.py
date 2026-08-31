@@ -1,0 +1,3 @@
+"""
+Chronological state management package.
+"""

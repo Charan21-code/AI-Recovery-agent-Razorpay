@@ -1,0 +1,3 @@
+"""
+Event normalization package.
+"""
