@@ -53,6 +53,7 @@ class ActionProposal(BaseModel):
     event_id: str
     customer_id: str
     selected_action: RecoveryActionType
+    delay_minutes: int = Field(default=0, ge=0)
     confidence: float = Field(..., ge=0.0, le=1.0)
     reasoning: str
     evidence_citations: List[str] = Field(default_factory=list)
