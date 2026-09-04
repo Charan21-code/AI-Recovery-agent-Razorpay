@@ -32,18 +32,22 @@ class CheckoutAbandonmentAgent(BaseRecoveryAgent):
         attempts = int(max(context.customer_state.total_recovery_attempts, context.history_summary.previous_recovery_attempts))
         channel = CommunicationChannel.WHATSAPP if context.customer_profile.phone else CommunicationChannel.EMAIL
 
-        comm = None
-        
-        if best_action == RecoveryActionType.STOP:
+        # Anti-fatigue rule: halt outreach after 2 attempts
+        if attempts >= 2 or best_action == RecoveryActionType.STOP:
             return self._create_proposal(
                 context=context,
-                selected_action=best_action,
+                selected_action=RecoveryActionType.STOP,
                 confidence=confidence,
                 reasoning=f"Customer has received {attempts} prior checkout reminders without conversion. Halting automated outreach to prevent fatigue.",
                 communication=None,
             )
-            
-        elif best_action == RecoveryActionType.GENERATE_PAYMENT_LINK:
+
+        if best_action not in [RecoveryActionType.GENERATE_PAYMENT_LINK, RecoveryActionType.SEND_CHECKOUT_RECOVERY]:
+            best_action = RecoveryActionType.SEND_CHECKOUT_RECOVERY
+
+        comm = None
+        
+        if best_action == RecoveryActionType.GENERATE_PAYMENT_LINK:
             policy = context.policy_context
             discount_text = f" Use code SAVE{int(policy.max_discount_percent)} for {int(policy.max_discount_percent)}% off!" if policy.allow_discount else ""
             comm = CommunicationPayload(

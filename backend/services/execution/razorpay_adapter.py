@@ -88,13 +88,20 @@ class RazorpayAdapter:
         """Fetches payment details by Payment ID."""
         if self.is_placeholder_key:
             logger.info("Using mock Razorpay fetch_payment", payment_id=payment_id)
+            # Recovery context: payments are FAILED (that's why the agent is calling).
+            # Only simulate captured status if the payment_id explicitly signals success
+            # (e.g. test scripts that need to verify the captured-branch logic).
+            is_captured = payment_id.endswith("_captured") or payment_id.endswith("_success")
             return {
                 "id": payment_id,
                 "entity": "payment",
                 "amount": 249900,
                 "currency": "INR",
-                "status": "captured",
+                "status": "captured" if is_captured else "failed",
+                "captured": is_captured,
                 "method": "upi",
+                "error_code": None if is_captured else "BAD_REQUEST_ERROR",
+                "error_description": None if is_captured else "Payment failed at bank gateway",
                 "created_at": int(datetime.now(timezone.utc).timestamp()),
             }
 

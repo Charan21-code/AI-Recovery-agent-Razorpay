@@ -35,8 +35,8 @@ class PaymentFailureAgent(BaseRecoveryAgent):
         attempts = int(max(context.customer_state.total_recovery_attempts, context.history_summary.previous_recovery_attempts))
         is_vip = context.customer_profile.is_vip
 
-        # 1. Systemic Degradation Check
-        if context.is_merchant_system_degraded and best_action == RecoveryActionType.DELAYED_RETRY:
+        # 1. Systemic Degradation Check - Postpone retry to protect banking rails
+        if context.is_merchant_system_degraded:
             return self._create_proposal(
                 context=context,
                 selected_action=RecoveryActionType.DELAYED_RETRY,
@@ -45,6 +45,16 @@ class PaymentFailureAgent(BaseRecoveryAgent):
                 communication=None,
                 requires_human_review=False,
             )
+
+        # 2. Hard Declines (Card expired, blocked, or mandate rejected) - cannot be retried silently
+        if failure_cat in [FailureCategory.EXPIRED_OR_BLOCKED_CARD, FailureCategory.MANDATE_REJECTED]:
+            best_action = RecoveryActionType.SEND_PAYMENT_METHOD_UPDATE
+
+        # 3. High-Value / VIP Attempt Exhaustion Escalation
+        elif attempts >= 3 and (amount >= 10000.0 or is_vip):
+            best_action = RecoveryActionType.ESCALATE_TO_HUMAN
+        elif attempts == 2 and best_action in [RecoveryActionType.IMMEDIATE_RETRY, RecoveryActionType.DELAYED_RETRY]:
+            best_action = RecoveryActionType.SEND_PERSONALIZED_MESSAGE
 
         # Communication Payload Generation based on ML's best_action
         comm = None

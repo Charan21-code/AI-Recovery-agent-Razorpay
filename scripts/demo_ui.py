@@ -16,15 +16,26 @@ from backend.services.ml.predictor import recovery_predictor
 from backend.services.ml.opportunity_scorer import opportunity_scorer
 from backend.services.agents.orchestrator import orchestrator
 from backend.services.policy_engine.engine import policy_engine
+import importlib
 from backend.services.execution.executor import executor
 from backend.services.execution.scheduler import scheduler
+from backend.db.base import Base
+from backend.db.session import SyncSessionLocal, sync_engine
+from backend.schemas.outcomes import RecoveryOutcome
+from backend.services.outcomes.outcome_processor import outcome_processor
+from backend.services.outcomes.audit_trail import audit_trail_service
+from backend.services.outcomes.revenue_calculator import revenue_calculator
+from backend.services.feedback import feedback_store, bandit_learner
+from backend.services.features.feature_engine import feature_engine
 
+# Ensure SQLite tables exist for live audit logs and state
+Base.metadata.create_all(bind=sync_engine)
 
 # Streamlit Page Config
 st.set_page_config(page_title="AI Recovery Engine", layout="wide", page_icon="⚡")
 
 st.title("⚡ AI Revenue Recovery Engine")
-st.markdown("End-to-end simulation of the intelligent recovery pipeline (Phases 1-7).")
+st.markdown("End-to-end simulation of the intelligent recovery pipeline (Phases 1-10: Ingestion → Context → ML → Agents → Policy → Execution → Outcome & Audit → Feedback & Learning).")
 
 # Sidebar: Simulation Controls
 st.sidebar.header("🔧 Simulation Controls")
@@ -53,6 +64,15 @@ previous_attempts = st.sidebar.slider(
 customer_opt_out = st.sidebar.checkbox("Customer Opted-Out of Comms?", value=False)
 is_vip_customer = st.sidebar.checkbox("Customer VIP Status?", value=False)
 system_degradation = st.sidebar.checkbox("Trigger Gateway System Degradation?", value=False)
+
+simulated_outcome_choice = st.sidebar.selectbox(
+    "Phase 9: Simulated Outcome",
+    [
+        "Success: Payment Recovered (Customer Paid in Full)",
+        "Failure: Customer Unresponsive / Retry Failed",
+    ],
+    help="Simulates the real-world outcome observed after the action is executed."
+)
 
 if st.sidebar.button("🚀 Process Event Pipeline", type="primary"):
     
@@ -326,6 +346,185 @@ if st.sidebar.button("🚀 Process Event Pipeline", type="primary"):
                 st.success("Plan Scheduler: Multi-step plan persisted to DB successfully.")
             else:
                 st.warning("Plan Scheduler: Plan scheduling skipped or blocked.")
+
+    # 7. OUTCOME PROCESSING & AUDIT TRAIL (PHASE 9)
+    with st.expander("Step 7: Outcome Processing & Audit Trail (Phase 9)", expanded=True):
+        st.write("Observing recovery outcome, updating live customer state, and compiling immutable audit trail...")
+
+        db_session = SyncSessionLocal()
+        try:
+            # Record audit steps for this run
+            audit_trail_service.record_entry(
+                session=db_session,
+                event_id=normalized_event.event_id,
+                stage="INGESTION",
+                actor="EventIngestion",
+                action="NORMALIZE_EVENT",
+                details={
+                    "event_type": normalized_event.event_type.value,
+                    "amount": normalized_event.amount,
+                    "failure_category": normalized_event.failure_category.value,
+                },
+            )
+            audit_trail_service.record_entry(
+                session=db_session,
+                event_id=normalized_event.event_id,
+                stage="PREDICTION",
+                actor="MLInferenceEngine",
+                action="PREDICT_ACTIONS",
+                details={
+                    "best_action": predictions.best_candidate_action.value,
+                    "propensity": f"{predictions.overall_recovery_propensity * 100:.1f}%",
+                    "optimal_delay": f"{predictions.optimal_delay_minutes}m",
+                },
+            )
+            audit_trail_service.record_entry(
+                session=db_session,
+                event_id=normalized_event.event_id,
+                stage="PROPOSAL",
+                actor=proposal.agent_type.value,
+                action=proposal.selected_action.value,
+                details={"confidence": proposal.confidence, "reasoning": proposal.reasoning},
+                decision_id=proposal.proposal_id,
+            )
+            audit_trail_service.record_entry(
+                session=db_session,
+                event_id=normalized_event.event_id,
+                stage="POLICY_CHECK",
+                actor="PolicyEngine",
+                action=verdict.status.value,
+                details={"approved_action": verdict.approved_action.value},
+                verdict_id=verdict.verdict_id,
+            )
+            audit_trail_service.record_entry(
+                session=db_session,
+                event_id=normalized_event.event_id,
+                stage="EXECUTION",
+                actor="ActionExecutor",
+                action=verdict.approved_action.value,
+                details={"status": "DISPATCHED" if exec_success else "BLOCKED_OR_SKIPPED"},
+            )
+
+            is_success_outcome = "Success" in simulated_outcome_choice
+            outcome_obj = RecoveryOutcome(
+                outcome_id=f"out_{datetime.now().strftime('%H%M%S')}_{context.current_event.event_id[-4:]}",
+                execution_id=f"exec_{context.current_event.event_id[-6:]}",
+                event_id=context.current_event.event_id,
+                customer_id=context.customer_profile.customer_id,
+                outcome_type=EventType.RECOVERY_SUCCESS if is_success_outcome else EventType.RECOVERY_FAILED,
+                recovered_amount=normalized_event.amount if is_success_outcome else 0.0,
+                currency=normalized_event.currency,
+                time_to_recovery_seconds=120.0 if is_success_outcome else None,
+                is_success=is_success_outcome,
+                raw_details={"simulated": True, "scenario": simulated_outcome_choice},
+                observed_at=datetime.now(timezone.utc),
+            )
+
+            try:
+                summary, reward = outcome_processor.process_outcome(
+                    session=db_session,
+                    outcome=outcome_obj,
+                    action_executed=verdict.approved_action,
+                    order_id=normalized_event.order_id,
+                    payment_id=normalized_event.payment_id,
+                    context=context,
+                    agent_type=proposal.agent_type,
+                )
+            except TypeError:
+                summary, reward = outcome_processor.process_outcome(
+                    session=db_session,
+                    outcome=outcome_obj,
+                    action_executed=verdict.approved_action,
+                    order_id=normalized_event.order_id,
+                    payment_id=normalized_event.payment_id,
+                )
+                feedback_store.record_learning_event(
+                    session=db_session,
+                    context=context,
+                    action_taken=verdict.approved_action,
+                    outcome=outcome_obj,
+                    reward=reward,
+                    agent_type=proposal.agent_type,
+                )
+
+            # Display Financial Summary
+            st.subheader("💰 Revenue & Reward Accounting")
+            col_rev1, col_rev2, col_rev3, col_rev4 = st.columns(4)
+            col_rev1.metric("Outcome Status", "✅ RECOVERED" if is_success_outcome else "❌ FAILED")
+            col_rev2.metric("Gross Recovered", f"₹{reward.recovered_revenue:,.2f}")
+            col_rev3.metric("Intervention Cost", f"₹{reward.intervention_cost:,.2f}")
+            col_rev4.metric("Net Recovered Value", f"₹{reward.net_reward:,.2f}")
+
+            # Display State Evolution
+            st.subheader("🔄 Chronological Customer State Update")
+            state_df = pd.DataFrame([
+                {
+                    "Metric": "Total Revenue Generated",
+                    "Before Outcome": f"₹{summary.previous_total_revenue:,.2f}",
+                    "After Outcome": f"₹{summary.updated_total_revenue:,.2f}",
+                },
+                {
+                    "Metric": "Historical Recovery Rate",
+                    "Before Outcome": f"{summary.previous_recovery_rate * 100:.1f}%",
+                    "After Outcome": f"{summary.updated_recovery_rate * 100:.1f}%",
+                },
+                {
+                    "Metric": "Intervention Fatigue Score",
+                    "Before Outcome": f"{context.customer_state.intervention_fatigue_score:.2f}",
+                    "After Outcome": f"{summary.updated_fatigue_score:.2f}",
+                },
+            ])
+            st.table(state_df)
+
+            # Display Chronological Audit Trail
+            st.subheader("📜 Complete Chronological Audit Trail")
+            timeline = audit_trail_service.format_readable_timeline(db_session, normalized_event.event_id)
+            for item in timeline:
+                st.markdown(
+                    f"**`{item['time']}`** — **[{item['stage']}]** `{item['actor']}`: "
+                    f"**{item['action']}**  \n"
+                    f"&nbsp;&nbsp;&nbsp;&nbsp;↳ *Details:* `{json.dumps(item['details'])}`"
+                )
+        finally:
+            db_session.close()
+
+    # 8. CLOSED-LOOP FEEDBACK & LEARNING (PHASE 10)
+    with st.expander("Step 8: Closed-Loop Feedback & Learning System (Phase 10)", expanded=True):
+        st.write("Capturing learning tuple ⟨Context, Action, Outcome, Reward⟩ and updating contextual bandit payoffs...")
+
+        db_session = SyncSessionLocal()
+        try:
+            # Query recent feedback events summary
+            fb_summary = feedback_store.get_feedback_summary(db_session)
+            col_fb1, col_fb2, col_fb3, col_fb4 = st.columns(4)
+            col_fb1.metric("Total Learning Events", fb_summary["total_events"])
+            col_fb2.metric("Total Revenue Logged", f"₹{fb_summary['total_recovered_revenue']:,.2f}")
+            col_fb3.metric("Cumulative Net Reward", f"₹{fb_summary['total_net_reward']:,.2f}")
+            col_fb4.metric("Avg Conversion Rate", f"{fb_summary['overall_conversion_rate'] * 100:.1f}%")
+
+            st.write("#### 🧩 Current Learning Tuple Stored")
+            tuple_col1, tuple_col2 = st.columns([1, 1])
+            with tuple_col1:
+                st.info(
+                    f"**Action Taken:** `{verdict.approved_action.value}`  \n"
+                    f"**Outcome Status:** `{outcome_obj.outcome_type.value}`  \n"
+                    f"**Net Economic Reward:** `₹{reward.net_reward:,.2f}`  \n"
+                    f"**Model / Policy Version:** `v1.0` / `v1.0`"
+                )
+            with tuple_col2:
+                with st.expander("Inspected Context Vector (20 signals)"):
+                    st.json(feature_engine.extract_features(context))
+
+            st.write("#### 🎰 Contextual Bandit Exploration / Exploitation Payoffs (Section 41)")
+            bandit_stats = bandit_learner.get_action_performance_table(db_session)
+            if bandit_stats:
+                st.dataframe(pd.DataFrame(bandit_stats), use_container_width=True)
+            else:
+                st.caption("No historical pulls recorded yet. Process multiple simulated events to build bandit profiles.")
+
+            st.caption("🛡️ **Safety Guarantee (Section 40):** The learning system evaluates candidate action payoffs and policy versions; hard merchant policy constraints and opt-outs are strictly non-negotiable and cannot be bypassed.")
+        finally:
+            db_session.close()
 
 st.markdown("---")
 st.caption("AI Recovery Engine Demo - Internal Tooling")

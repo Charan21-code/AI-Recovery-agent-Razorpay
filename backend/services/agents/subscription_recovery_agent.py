@@ -35,8 +35,9 @@ class SubscriptionRecoveryAgent(BaseRecoveryAgent):
         comm = None
         plan = None
 
-        if best_action == RecoveryActionType.ESCALATE_TO_HUMAN:
-            pass # No comm needed for internal escalation
+        if attempts >= 3 or best_action == RecoveryActionType.ESCALATE_TO_HUMAN:
+            best_action = RecoveryActionType.ESCALATE_TO_HUMAN
+            # Internal escalation to retain high risk subscription
         elif best_action == RecoveryActionType.START_VOICE_RECOVERY:
             comm = CommunicationPayload(
                 channel=CommunicationChannel.VOICE,

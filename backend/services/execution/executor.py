@@ -46,6 +46,9 @@ class ActionExecutor:
             
         elif action_to_execute in [RecoveryActionType.STOP, RecoveryActionType.WAIT]:
             logger.info("No action required.")
+
+        elif action_to_execute in [RecoveryActionType.SCHEDULE_DUNNING_STEP, RecoveryActionType.PROGRESSIVE_FOLLOWUP]:
+            logger.info(f"Action {action_to_execute.value} scheduled via MultiStepPlan scheduler.")
             
         else:
             logger.warning(f"Unknown action type: {action_to_execute}")

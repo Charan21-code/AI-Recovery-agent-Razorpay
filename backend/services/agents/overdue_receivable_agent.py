@@ -35,8 +35,8 @@ class OverdueReceivableAgent(BaseRecoveryAgent):
         comm = None
         plan = None
         
-        if best_action == RecoveryActionType.ESCALATE_TO_HUMAN:
-            pass # Internal escalation
+        if amount_at_risk >= 100000.0 or best_action == RecoveryActionType.ESCALATE_TO_HUMAN:
+            best_action = RecoveryActionType.ESCALATE_TO_HUMAN
         elif best_action == RecoveryActionType.START_VOICE_RECOVERY:
             comm = CommunicationPayload(
                 channel=CommunicationChannel.VOICE,
