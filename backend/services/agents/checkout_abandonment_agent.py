@@ -28,26 +28,44 @@ class CheckoutAbandonmentAgent(BaseRecoveryAgent):
     ) -> ActionProposal:
         best_action = opportunity.recommended_action
         confidence = opportunity.recovery_propensity
-
-        # Checkout abandonment generally warrants sending a recovery link
-        # If the ML model recommends something else, we still prefer generating a link
-        action = best_action
-        if action not in [RecoveryActionType.SEND_CHECKOUT_RECOVERY, RecoveryActionType.GENERATE_PAYMENT_LINK]:
-            action = RecoveryActionType.SEND_CHECKOUT_RECOVERY
-
+        amount = context.revenue_at_risk
+        attempts = int(max(context.customer_state.total_recovery_attempts, context.history_summary.previous_recovery_attempts))
         channel = CommunicationChannel.WHATSAPP if context.customer_profile.phone else CommunicationChannel.EMAIL
 
-        comm = CommunicationPayload(
-            channel=channel,
-            subject="Complete your purchase",
-            message_body=f"Hi {context.customer_profile.name}, it looks like you left something behind. Click here to complete your payment of {context.current_event.amount} {context.current_event.currency}.",
-            payment_link_url=f"https://rzp.io/i/checkout_{context.current_event.event_id[-6:]}"
-        )
+        comm = None
+        
+        if best_action == RecoveryActionType.STOP:
+            return self._create_proposal(
+                context=context,
+                selected_action=best_action,
+                confidence=confidence,
+                reasoning=f"Customer has received {attempts} prior checkout reminders without conversion. Halting automated outreach to prevent fatigue.",
+                communication=None,
+            )
+            
+        elif best_action == RecoveryActionType.GENERATE_PAYMENT_LINK:
+            policy = context.policy_context
+            discount_text = f" Use code SAVE{int(policy.max_discount_percent)} for {int(policy.max_discount_percent)}% off!" if policy.allow_discount else ""
+            comm = CommunicationPayload(
+                channel=channel,
+                subject="Still thinking it over? Complete your order",
+                message_body=f"Hi {context.customer_profile.name}, your cart items totaling {amount:,.2f} {context.current_event.currency} are reserved.{discount_text} Click to finish checkout:",
+                payment_link_url=f"https://rzp.io/i/chk_resume_{context.current_event.event_id[-6:]}"
+            )
+            
+        elif best_action == RecoveryActionType.SEND_CHECKOUT_RECOVERY:
+            comm = CommunicationPayload(
+                channel=channel,
+                subject="Complete your purchase",
+                message_body=f"Hi {context.customer_profile.name}, it looks like you left something behind. Click here to complete your order of {amount:,.2f} {context.current_event.currency}:",
+                payment_link_url=f"https://rzp.io/i/checkout_{context.current_event.event_id[-6:]}"
+            )
 
         return self._create_proposal(
             context=context,
-            selected_action=action,
+            selected_action=best_action,
             confidence=confidence,
-            reasoning=f"Customer abandoned checkout. Best action is to send a recovery link via {channel.value}.",
+            reasoning=f"Optimal action {best_action.value} selected by ML inference engine for attempt {attempts}.",
             communication=comm,
+            requires_human_review=(best_action == RecoveryActionType.ESCALATE_TO_HUMAN)
         )

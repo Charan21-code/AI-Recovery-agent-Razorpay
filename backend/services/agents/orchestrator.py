@@ -27,9 +27,12 @@ class RecoveryOrchestrator:
         self._routing_table: Dict[EventType, Type[BaseRecoveryAgent]] = {
             EventType.PAYMENT_FAILED: PaymentFailureAgent,
             EventType.CHECKOUT_ABANDONED: CheckoutAbandonmentAgent,
+            EventType.CHECKOUT_STARTED: CheckoutAbandonmentAgent,
             EventType.SUBSCRIPTION_PAYMENT_FAILED: SubscriptionRecoveryAgent,
+            EventType.MANDATE_FAILED: SubscriptionRecoveryAgent,
+            EventType.SUBSCRIPTION_CANCELLED: SubscriptionRecoveryAgent,
+            EventType.SUBSCRIPTION_EXPIRED: SubscriptionRecoveryAgent,
             EventType.INVOICE_OVERDUE: OverdueReceivableAgent,
-            EventType.MANDATE_FAILED: SubscriptionRecoveryAgent,  # Mandate failures act like sub failures
         }
         
         # Instantiate agents (they are stateless so we can reuse them)
@@ -49,12 +52,21 @@ class RecoveryOrchestrator:
         """
         Route the event to the appropriate specialized agent and return the proposal.
         """
-        event_type = context.current_event.event_type
+        event = context.current_event
+        event_type = event.event_type
         
         agent_class = self._routing_table.get(event_type)
         if not agent_class:
-            logger.warning(f"No specialized agent mapped for event type: {event_type.value}. Using PaymentFailureAgent as fallback.")
-            agent_class = PaymentFailureAgent
+            # Contextual fallback: detect if subscription, invoice, or checkout entity is present
+            if event.subscription_id or "sub" in event.event_id:
+                agent_class = SubscriptionRecoveryAgent
+            elif event.invoice_id or "inv" in event.event_id:
+                agent_class = OverdueReceivableAgent
+            elif event.checkout_stage or "chk" in event.event_id:
+                agent_class = CheckoutAbandonmentAgent
+            else:
+                logger.warning(f"No specialized agent mapped for event type: {event_type.value}. Using PaymentFailureAgent as fallback.")
+                agent_class = PaymentFailureAgent
             
         # Get the instantiated agent
         # We can find the instance by instantiating the class to get its type, or just instantiate directly

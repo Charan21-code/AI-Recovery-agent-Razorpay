@@ -165,3 +165,53 @@ def test_overdue_invoice_escalates_high_value(base_context, base_predictions, ba
     assert proposal.agent_type == AgentType.OVERDUE_RECEIVABLE
     assert proposal.selected_action == RecoveryActionType.ESCALATE_TO_HUMAN
     assert proposal.requires_human_review is True
+
+
+def test_payment_failure_agent_attempt_tiers(base_context, base_predictions, base_opportunity):
+    """Test that PaymentFailureAgent adapts strategy dynamically across attempts 0, 2, and 3."""
+    # Attempt 0: Delayed retry for transient timeout
+    base_context.customer_state.total_recovery_attempts = 0
+    base_context.history_summary.previous_recovery_attempts = 0
+    prop_0 = orchestrator.dispatch(base_context, base_predictions, base_opportunity)
+    assert prop_0.selected_action in [RecoveryActionType.DELAYED_RETRY, RecoveryActionType.IMMEDIATE_RETRY]
+
+    # Attempt 2: Channel switch to personalized messaging (WhatsApp)
+    base_context.customer_state.total_recovery_attempts = 2
+    base_context.history_summary.previous_recovery_attempts = 2
+    prop_2 = orchestrator.dispatch(base_context, base_predictions, base_opportunity)
+    assert prop_2.selected_action == RecoveryActionType.SEND_PERSONALIZED_MESSAGE
+    assert prop_2.communication is not None
+    assert prop_2.communication.channel == CommunicationChannel.WHATSAPP
+
+    # Attempt 3: Exhausted attempts on high value -> Escalate to human
+    base_context.customer_state.total_recovery_attempts = 3
+    base_context.history_summary.previous_recovery_attempts = 3
+    base_context.revenue_at_risk = 12000.0
+    prop_3 = orchestrator.dispatch(base_context, base_predictions, base_opportunity)
+    assert prop_3.selected_action == RecoveryActionType.ESCALATE_TO_HUMAN
+    assert prop_3.requires_human_review is True
+
+
+def test_checkout_abandonment_agent_anti_fatigue(base_context, base_predictions, base_opportunity):
+    """Test that CheckoutAbandonmentAgent stops outreach after 2 failed attempts to prevent fatigue."""
+    base_context.current_event.event_type = EventType.CHECKOUT_ABANDONED
+    base_context.customer_state.total_recovery_attempts = 2
+    base_context.history_summary.previous_recovery_attempts = 2
+    
+    proposal = orchestrator.dispatch(base_context, base_predictions, base_opportunity)
+    assert proposal.agent_type == AgentType.CHECKOUT_ABANDONMENT
+    assert proposal.selected_action == RecoveryActionType.STOP
+
+
+def test_subscription_agent_imminent_cancellation(base_context, base_predictions, base_opportunity):
+    """Test that SubscriptionRecoveryAgent escalates at attempt 3 to prevent cancellation."""
+    base_context.current_event.event_type = EventType.SUBSCRIPTION_PAYMENT_FAILED
+    base_context.customer_state.total_recovery_attempts = 3
+    base_context.history_summary.previous_recovery_attempts = 3
+    base_context.revenue_at_risk = 2499.0
+    
+    proposal = orchestrator.dispatch(base_context, base_predictions, base_opportunity)
+    assert proposal.agent_type == AgentType.SUBSCRIPTION_RECOVERY
+    assert proposal.selected_action == RecoveryActionType.ESCALATE_TO_HUMAN
+    assert proposal.requires_human_review is True
+

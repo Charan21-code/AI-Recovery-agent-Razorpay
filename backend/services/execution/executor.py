@@ -44,7 +44,7 @@ class ActionExecutor:
         elif action_to_execute == RecoveryActionType.ESCALATE_TO_HUMAN:
             self._escalate_to_human(proposal, verdict.modification_reason)
             
-        elif action_to_execute == RecoveryActionType.NO_ACTION:
+        elif action_to_execute in [RecoveryActionType.STOP, RecoveryActionType.WAIT]:
             logger.info("No action required.")
             
         else:

@@ -28,44 +28,56 @@ class SubscriptionRecoveryAgent(BaseRecoveryAgent):
     ) -> ActionProposal:
         best_action = opportunity.recommended_action
         confidence = opportunity.recovery_propensity
+        amount = context.revenue_at_risk
+        attempts = int(max(context.customer_state.total_recovery_attempts, context.history_summary.previous_recovery_attempts))
+        is_vip = context.customer_profile.is_vip
 
-        # If it's early in the dunning cycle (e.g. consecutive_failures <= 2), we can just schedule a dunning step
-        if context.customer_state.consecutive_failures_count <= 2:
-            action = RecoveryActionType.SCHEDULE_DUNNING_STEP
-            delay = predictions.optimal_delay_minutes or 1440  # 1 day by default
-            
-            # Create a multi-step dunning plan
+        comm = None
+        plan = None
+
+        if best_action == RecoveryActionType.ESCALATE_TO_HUMAN:
+            pass # No comm needed for internal escalation
+        elif best_action == RecoveryActionType.START_VOICE_RECOVERY:
+            comm = CommunicationPayload(
+                channel=CommunicationChannel.VOICE,
+                message_body=f"Hello {context.customer_profile.name}, your recurring subscription payment of {amount:,.2f} {context.current_event.currency} has failed multiple times. Press 1 to renew your billing mandate immediately.",
+                payment_link_url="https://rzp.io/i/sub_mandate"
+            )
+        elif best_action == RecoveryActionType.SEND_PAYMENT_METHOD_UPDATE:
+            comm = CommunicationPayload(
+                channel=CommunicationChannel.WHATSAPP if context.customer_profile.phone else CommunicationChannel.EMAIL,
+                subject="Urgent: Your subscription is about to be paused",
+                message_body=f"Hi {context.customer_profile.name}, your subscription payment of {amount:,.2f} failed. Please update your mandate card or payment method today to ensure uninterrupted service:",
+                payment_link_url="https://rzp.io/i/sub_update"
+            )
+        elif best_action == RecoveryActionType.GENERATE_PAYMENT_LINK:
+            comm = CommunicationPayload(
+                channel=CommunicationChannel.WHATSAPP,
+                message_body=f"Hi {context.customer_profile.name}, your subscription payment of {amount:,.2f} failed. You can complete the payment using UPI, Credit Card, or NetBanking here:",
+                payment_link_url="https://rzp.io/i/alt_methods"
+            )
+        else:
+            # For immediate/delayed retries and reminders on subscriptions, schedule a dunning plan
+            delay = predictions.optimal_delay_minutes or 1440
+            best_action = RecoveryActionType.SCHEDULE_DUNNING_STEP
             plan = MultiStepPlan(
                 plan_id=f"dunning_{context.current_event.event_id[-6:]}",
                 target_event_id=context.current_event.event_id,
                 customer_id=context.customer_profile.customer_id,
                 total_steps=3,
                 steps=[
-                    PlanStep(step_number=1, action=RecoveryActionType.DELAYED_RETRY, delay_minutes=delay, description="First retry attempt"),
-                    PlanStep(step_number=2, action=RecoveryActionType.SEND_PAYMENT_REMINDER, channel=CommunicationChannel.EMAIL, delay_minutes=2880, description="Email reminder on day 3"),
-                    PlanStep(step_number=3, action=RecoveryActionType.SEND_PAYMENT_METHOD_UPDATE, channel=CommunicationChannel.WHATSAPP, delay_minutes=4320, description="Final warning on day 5"),
+                    PlanStep(step_number=1, action=RecoveryActionType.DELAYED_RETRY, delay_minutes=delay, description=f"Automated mandate re-try after {delay}m"),
+                    PlanStep(step_number=2, action=RecoveryActionType.SEND_PAYMENT_REMINDER, channel=CommunicationChannel.EMAIL, delay_minutes=2880, description="Gentle email notification on day 2"),
+                    PlanStep(step_number=3, action=RecoveryActionType.SEND_PAYMENT_METHOD_UPDATE, channel=CommunicationChannel.WHATSAPP, delay_minutes=5760, description="WhatsApp mandate update request on day 4"),
                 ]
             )
 
-            return self._create_proposal(
-                context=context,
-                selected_action=action,
-                confidence=confidence,
-                reasoning=f"Early stage subscription failure. Scheduling a dunning cycle starting with {delay}m delay.",
-                multi_step_plan=plan,
-            )
-        
-        # If consecutive failures are high, we escalate or require hard update
-        comm = CommunicationPayload(
-            channel=CommunicationChannel.EMAIL,
-            subject="Action Required: Your subscription is paused",
-            message_body=f"Hi {context.customer_profile.name}, your subscription payment has failed multiple times. Please update your payment method to avoid cancellation.",
-            payment_link_url="https://rzp.io/i/sub_update"
-        )
         return self._create_proposal(
             context=context,
-            selected_action=RecoveryActionType.SEND_PAYMENT_METHOD_UPDATE,
-            confidence=max(confidence, 0.7),
-            reasoning="High consecutive failures. Customer must update their payment method.",
+            selected_action=best_action,
+            confidence=confidence,
+            reasoning=f"Optimal action {best_action.value} selected by ML inference engine for attempt {attempts}.",
             communication=comm,
+            multi_step_plan=plan,
+            requires_human_review=(best_action == RecoveryActionType.ESCALATE_TO_HUMAN)
         )

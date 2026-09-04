@@ -64,6 +64,19 @@ class FeatureEngine:
         profile = context.customer_profile
         event = context.current_event
 
+        # Synchronize and harmonize attempts and fatigue between customer_state and history_summary
+        hist = context.history_summary
+        attempts = float(max(state.total_recovery_attempts, hist.previous_recovery_attempts))
+        consecutive_failures = float(max(state.consecutive_failures_count, hist.consecutive_failures_count, int(attempts)))
+
+        # Dynamic fatigue score derivation if not explicitly stored
+        fatigue_score = float(max(state.intervention_fatigue_score, hist.intervention_fatigue_score))
+        if fatigue_score == 0.0 and attempts > 0:
+            fatigue_score = float(min(1.0, attempts * 0.22))
+
+        recent_interventions = float(max(state.recent_intervention_count, int(attempts)))
+        historical_recovery_rate = float(state.historical_recovery_rate if state.historical_recovery_rate > 0 else hist.historical_recovery_rate)
+
         # Financial ratio
         avg_val = state.average_transaction_value if state.average_transaction_value > 0 else event.amount
         amount_to_avg = round(event.amount / avg_val, 4) if avg_val > 0 else 1.0
@@ -85,17 +98,17 @@ class FeatureEngine:
             "total_transactions": float(state.total_transactions),
             "total_revenue_generated": float(state.total_revenue_generated),
             "average_transaction_value": float(state.average_transaction_value),
-            "historical_recovery_rate": float(state.historical_recovery_rate),
-            "total_recovery_attempts": float(state.total_recovery_attempts),
-            "consecutive_failures_count": float(state.consecutive_failures_count),
-            "intervention_fatigue_score": float(state.intervention_fatigue_score),
-            "recent_intervention_count": float(state.recent_intervention_count),
+            "historical_recovery_rate": historical_recovery_rate,
+            "total_recovery_attempts": attempts,
+            "consecutive_failures_count": consecutive_failures,
+            "intervention_fatigue_score": fatigue_score,
+            "recent_intervention_count": recent_interventions,
             "revenue_at_risk": float(context.revenue_at_risk),
             "estimated_clv_at_risk": float(context.estimated_clv_at_risk),
             "amount_to_avg_ratio": float(amount_to_avg),
             "failure_category_code": fail_code,
             "payment_method_code": method_code,
-            "attempt_count": float(event.attempt_count),
+            "attempt_count": float(max(event.attempt_count, int(attempts))),
             "hour_of_day": hour,
             "day_of_week": day_of_week,
             "is_merchant_system_degraded": 1.0 if context.is_merchant_system_degraded else 0.0,

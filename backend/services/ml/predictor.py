@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 import numpy as np
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import GradientBoostingClassifier
-from backend.core.constants import FailureCategory, RecoveryActionType
+from backend.core.constants import EventType, FailureCategory, RecoveryActionType
 from backend.core.logging import get_logger
 from backend.schemas.context import DecisionContext
 from backend.schemas.predictions import (
@@ -43,71 +43,126 @@ INTERVENTION_COSTS: Dict[RecoveryActionType, float] = {
 class RecoveryPredictor:
     """Estimates recovery probability per candidate action and opportunity priority."""
 
-    def __init__(self, model_version: str = "v1.0.0-calibrated-gbm"):
+    def __init__(self, model_version: str = "v2.0.0-calibrated-gbm"):
         self.model_version = model_version
         self._model = None
         self._initialize_base_model()
 
     def _initialize_base_model(self):
-        """Initializes a calibrated gradient boosting model with realistic domain priors."""
+        """Initializes a calibrated gradient boosting model trained across all 20 features."""
         np.random.seed(42)
-        n_samples = 400
+        n_samples = 1500
         n_features = len(feature_engine.FEATURE_NAMES)
         X = np.zeros((n_samples, n_features), dtype=np.float32)
 
         # Feature 0: historical_success_rate [0.0 - 1.0]
         X[:, 0] = np.random.beta(5, 2, size=n_samples)
         # Feature 1: total_transactions
-        X[:, 1] = np.random.poisson(8, size=n_samples)
+        X[:, 1] = np.random.poisson(8, size=n_samples) + 1
+        # Feature 2: total_revenue_generated
+        X[:, 2] = X[:, 1] * np.random.uniform(1500, 3500, size=n_samples)
+        # Feature 3: average_transaction_value
+        X[:, 3] = X[:, 2] / X[:, 1]
         # Feature 4: historical_recovery_rate [0.0 - 1.0]
-        X[:, 4] = np.random.beta(6, 2, size=n_samples)
+        X[:, 4] = np.random.beta(4, 2, size=n_samples)
+        # Feature 5: total_recovery_attempts [0 to 5]
+        X[:, 5] = np.random.choice([0, 1, 2, 3, 4, 5], size=n_samples, p=[0.35, 0.25, 0.18, 0.12, 0.06, 0.04])
+        # Feature 6: consecutive_failures_count
+        X[:, 6] = X[:, 5] + np.random.choice([0, 1], size=n_samples, p=[0.7, 0.3])
         # Feature 7: intervention_fatigue_score [0.0 - 1.0]
-        X[:, 7] = np.random.beta(1.5, 4, size=n_samples)
+        X[:, 7] = np.clip(X[:, 5] * 0.22 + np.random.normal(0, 0.04, size=n_samples), 0.0, 1.0)
+        # Feature 8: recent_intervention_count
+        X[:, 8] = X[:, 5]
         # Feature 9: revenue_at_risk
-        X[:, 9] = np.random.exponential(3000, size=n_samples) + 500
+        X[:, 9] = np.random.exponential(3500, size=n_samples) + 500
+        # Feature 10: estimated_clv_at_risk
+        X[:, 10] = X[:, 9] * np.random.uniform(4, 12, size=n_samples)
+        # Feature 11: amount_to_avg_ratio
+        X[:, 11] = np.clip(np.random.normal(1.0, 0.3, size=n_samples), 0.2, 4.0)
         # Feature 12: failure_category_code (0 to 7)
         X[:, 12] = np.random.choice([0, 1, 2, 3, 4, 5, 6, 7], size=n_samples, p=[0.05, 0.35, 0.20, 0.15, 0.10, 0.05, 0.05, 0.05])
         # Feature 13: payment_method_code (0 to 5)
         X[:, 13] = np.random.choice([0, 1, 2, 3, 4, 5], size=n_samples, p=[0.05, 0.45, 0.30, 0.10, 0.05, 0.05])
+        # Feature 14: attempt_count
+        X[:, 14] = X[:, 5] + 1
+        # Feature 15: hour_of_day
+        X[:, 15] = np.random.uniform(0, 24, size=n_samples)
+        # Feature 16: day_of_week
+        X[:, 16] = np.random.uniform(0, 7, size=n_samples)
+        # Feature 17: is_merchant_system_degraded
+        X[:, 17] = np.random.choice([0, 1], size=n_samples, p=[0.90, 0.10])
+        # Feature 18: is_vip_customer
+        X[:, 18] = np.random.choice([0, 1], size=n_samples, p=[0.85, 0.15])
+        # Feature 19: is_opted_out
+        X[:, 19] = np.random.choice([0, 1], size=n_samples, p=[0.95, 0.05])
 
-        # Realistic Target Probability formula
-        # Base recovery: 0.60, high success rate: +0.25, transient timeout (code 1): +0.20, fatigue: -0.35
+        # Realistic Domain Probability Formula with Causal Sensitivity:
+        # Base recovery potential: 0.60
+        # Success and recovery history lift: +0.20, +0.15
+        # Transient timeout lift: +0.20
+        # Recovery attempts decay: -0.14 per attempt (strongly penalizes repeated attempts)
+        # Fatigue penalty: -0.22
+        # System degradation penalty: -0.25
+        # Hard declines penalty: -0.20
         is_transient = (X[:, 12] == 1).astype(float)
-        is_auth_or_funds = np.isin(X[:, 12], [2, 3]).astype(float)
-        probs = 0.50 + 0.30 * X[:, 0] + 0.25 * is_transient - 0.20 * is_auth_or_funds - 0.40 * X[:, 7]
-        y = (np.random.uniform(0.0, 1.0, size=n_samples) < np.clip(probs, 0.08, 0.95)).astype(int)
+        is_hard_decline = np.isin(X[:, 12], [4, 5]).astype(float)
 
-        base_gb = GradientBoostingClassifier(n_estimators=35, max_depth=3, random_state=42)
+        probs = (
+            0.60
+            + 0.20 * X[:, 0]
+            + 0.15 * X[:, 4]
+            + 0.20 * is_transient
+            - 0.14 * X[:, 5]
+            - 0.22 * X[:, 7]
+            - 0.08 * np.clip(X[:, 6] - 1, 0, 5)
+            - 0.25 * X[:, 17]
+            - 0.20 * is_hard_decline
+        )
+        y = (np.random.uniform(0.0, 1.0, size=n_samples) < np.clip(probs, 0.05, 0.95)).astype(int)
+
+        base_gb = GradientBoostingClassifier(n_estimators=45, max_depth=4, learning_rate=0.08, random_state=42)
         self._model = CalibratedClassifierCV(estimator=base_gb, cv=3)
         self._model.fit(X, y)
 
     def predict_actions(self, context: DecisionContext) -> ModelPredictions:
         """
-        Estimates P(recovery | context, action) for all applicable candidate recovery actions.
+        Estimates P(recovery | context, action) for all candidate recovery actions.
+        Sensitively reacts to previous recovery attempts, failure categories, and customer context.
         """
         feat_vector = feature_engine.extract_feature_vector(context).reshape(1, -1)
         base_prob = float(self._model.predict_proba(feat_vector)[0, 1])
 
         state = context.customer_state
+        hist = context.history_summary
         event = context.current_event
         cat = event.failure_category
         risk_val = context.revenue_at_risk
         optimal_delay = timing_optimizer.predict_optimal_delay(context)
 
-        # Baseline adjustments based on historical context
-        if state.total_recovery_attempts > 0:
-            hist_rec = state.historical_recovery_rate
-            overall_propensity = (base_prob * 0.4) + (hist_rec * 0.6)
-        elif state.successful_transactions > 0:
-            overall_propensity = (base_prob * 0.4) + (state.success_rate * 0.6)
-        else:
-            # First-time customer or single failure so far: rely on ML prior
-            overall_propensity = base_prob
+        # Synchronize attempts and fatigue from state and history summary
+        attempts = int(max(state.total_recovery_attempts, hist.previous_recovery_attempts))
+        fatigue = float(max(state.intervention_fatigue_score, hist.intervention_fatigue_score))
+        if fatigue == 0.0 and attempts > 0:
+            fatigue = float(min(1.0, attempts * 0.22))
+        consecutive = int(max(state.consecutive_failures_count, hist.consecutive_failures_count, attempts))
 
-        # Penalize for severe intervention fatigue or repeated consecutive failures (beyond first attempt)
-        fatigue_penalty = state.intervention_fatigue_score * 0.30
-        consecutive_penalty = min(0.40, max(0, state.consecutive_failures_count - 1) * 0.10)
-        overall_propensity = float(np.clip(overall_propensity - fatigue_penalty - consecutive_penalty, 0.10, 0.95))
+        # Overall Propensity formulation:
+        # For first-time recovery (attempts == 0), customer historical success rate elevates propensity
+        # As attempts increase, propensity drops monotonically due to non-responsiveness / exhaustion
+        if attempts == 0:
+            if state.success_rate > 0:
+                overall_propensity = (base_prob * 0.5) + (state.success_rate * 0.5)
+            else:
+                overall_propensity = base_prob
+        else:
+            attempt_decay = max(0.05, 1.0 - (attempts * 0.16))
+            overall_propensity = base_prob * (0.35 + 0.65 * attempt_decay)
+            if state.historical_recovery_rate > 0:
+                overall_propensity = (overall_propensity * 0.7) + (state.historical_recovery_rate * 0.3)
+            # Additional penalty for intervention fatigue and consecutive failures
+            overall_propensity -= (fatigue * 0.18) + (min(0.30, max(0, consecutive - 1) * 0.08))
+
+        overall_propensity = float(np.clip(overall_propensity, 0.05, 0.95))
 
         action_predictions: Dict[str, ActionPrediction] = {}
         candidate_actions = [
@@ -123,63 +178,80 @@ class RecoveryPredictor:
         ]
 
         best_action = RecoveryActionType.DELAYED_RETRY
-        best_expected_val = -1.0
+        best_expected_val = -100.0
 
         for action in candidate_actions:
             prob = overall_propensity
             cost = INTERVENTION_COSTS.get(action, 0.0)
 
-            # Action-specific adjustments based on domain intelligence
-            if action == RecoveryActionType.IMMEDIATE_RETRY:
-                if cat == FailureCategory.TRANSIENT_BANK_TIMEOUT and not context.is_merchant_system_degraded:
-                    prob = min(0.85, prob * 1.1)
-                elif cat in [FailureCategory.INSUFFICIENT_FUNDS, FailureCategory.EXPIRED_OR_BLOCKED_CARD]:
-                    prob = max(0.05, prob * 0.2)  # Immediate retry almost always fails for expired card / low funds
-                else:
-                    prob = prob * 0.7
+            # --- DYNAMIC ATTEMPT-BASED SCORING MATRIX ---
+            
+            # Base logic: penalize all actions slightly initially
+            prob = prob * 0.50
 
-            elif action == RecoveryActionType.DELAYED_RETRY:
-                if cat == FailureCategory.TRANSIENT_BANK_TIMEOUT:
-                    prob = min(0.92, prob * 1.35)
-                elif cat == FailureCategory.INSUFFICIENT_FUNDS:
-                    prob = min(0.75, prob * 1.2)
-                else:
-                    prob = prob * 0.9
+            if attempts == 0:
+                if action == RecoveryActionType.IMMEDIATE_RETRY:
+                    prob = overall_propensity * 1.15 if cat == FailureCategory.TRANSIENT_BANK_TIMEOUT and not context.is_merchant_system_degraded else 0.05
+                elif action == RecoveryActionType.DELAYED_RETRY:
+                    prob = overall_propensity * 1.35 if cat == FailureCategory.TRANSIENT_BANK_TIMEOUT else overall_propensity * 1.10
+                elif action == RecoveryActionType.SEND_PAYMENT_REMINDER:
+                    prob = overall_propensity * 0.90
+                elif action == RecoveryActionType.SEND_CHECKOUT_RECOVERY:
+                    prob = overall_propensity * 1.30 if event.event_type == EventType.CHECKOUT_ABANDONED else 0.10
 
-            elif action == RecoveryActionType.SEND_PAYMENT_METHOD_UPDATE:
-                if cat in [FailureCategory.EXPIRED_OR_BLOCKED_CARD, FailureCategory.MANDATE_REJECTED, FailureCategory.INSUFFICIENT_FUNDS]:
-                    prob = min(0.88, prob * 1.4)
-                else:
-                    prob = prob * 0.8
+            elif attempts == 1:
+                if action == RecoveryActionType.GENERATE_PAYMENT_LINK:
+                    prob = overall_propensity * 1.40
+                elif action == RecoveryActionType.SEND_PAYMENT_METHOD_UPDATE:
+                    prob = overall_propensity * 1.35
+                elif action == RecoveryActionType.SEND_PAYMENT_REMINDER:
+                    prob = overall_propensity * 1.20
+                elif action == RecoveryActionType.DELAYED_RETRY:
+                    prob = overall_propensity * 0.70
 
-            elif action == RecoveryActionType.SEND_CHECKOUT_RECOVERY:
-                if event.event_type.value == "CHECKOUT_ABANDONED":
-                    prob = min(0.78, prob * 1.3)
-                else:
-                    prob = prob * 0.5
+            elif attempts == 2:
+                if action == RecoveryActionType.SEND_PERSONALIZED_MESSAGE:
+                    prob = overall_propensity * 1.45
+                elif action == RecoveryActionType.START_VOICE_RECOVERY:
+                    prob = overall_propensity * 1.30 if risk_val >= 1000.0 else 0.40
+                elif action == RecoveryActionType.SEND_PAYMENT_METHOD_UPDATE:
+                    prob = overall_propensity * 1.20
 
-            elif action == RecoveryActionType.SEND_PERSONALIZED_MESSAGE:
-                # Personalized Hinglish message provides solid lift across most categories
-                prob = min(0.86, prob * 1.15)
+            else:  # attempts >= 3
+                if action == RecoveryActionType.ESCALATE_TO_HUMAN:
+                    if risk_val >= 10000.0 or context.customer_profile.is_vip:
+                        prob = overall_propensity * 1.80
+                    else:
+                        prob = overall_propensity * 1.40
+                elif action == RecoveryActionType.START_VOICE_RECOVERY:
+                    prob = overall_propensity * 1.50
+                elif action == RecoveryActionType.STOP:
+                    prob = 0.95  # Safe stop action
+                
+                # Disallow silent retries explicitly
+                if action in [RecoveryActionType.IMMEDIATE_RETRY, RecoveryActionType.DELAYED_RETRY]:
+                    prob = 0.01
 
-            elif action == RecoveryActionType.START_VOICE_RECOVERY:
-                # Voice works especially well for high-ticket transactions or older customers
-                if risk_val >= 5000.0 and state.consecutive_failures_count <= 2:
-                    prob = min(0.89, prob * 1.25)
-                else:
-                    prob = prob * 0.8
-
-            elif action == RecoveryActionType.ESCALATE_TO_HUMAN:
-                # High cost, but reliable for VIPs or high-value overdue invoices
-                if risk_val >= 20000.0 or context.customer_profile.is_vip:
-                    prob = min(0.95, prob * 1.3)
-                else:
-                    prob = prob * 0.6
+            # Hard Declines Exception
+            if cat in [FailureCategory.EXPIRED_OR_BLOCKED_CARD, FailureCategory.MANDATE_REJECTED]:
+                if action in [RecoveryActionType.IMMEDIATE_RETRY, RecoveryActionType.DELAYED_RETRY]:
+                    prob = 0.01
+                if action == RecoveryActionType.SEND_PAYMENT_METHOD_UPDATE and attempts < 3:
+                    prob = overall_propensity * 1.60
 
             prob = round(float(np.clip(prob, 0.02, 0.98)), 4)
+            
+            # Recalibrate Expected Value 
+            # (Use a scaled expected value so high costs don't completely bury valid actions)
+            # We treat cost as a penalty on the raw expected value
             expected_val = round(risk_val * prob, 2)
-            net_exp_val = round(expected_val - cost, 2)
-            confidence = round(min(0.99, max(0.50, 1.0 - (state.intervention_fatigue_score * 0.3))), 2)
+            
+            # To ensure the logic works even for low amounts where expected_val < 15,
+            # we scale the net expected value logic based on base amounts
+            net_exp_val = round(expected_val - (cost * 100.0 if risk_val < 5000 else cost * 10.0), 2)
+            
+            # Confidence decays directly with attempts and fatigue
+            confidence = round(float(np.clip(1.0 - (fatigue * 0.35) - (attempts * 0.06), 0.40, 0.98)), 2)
 
             act_pred = ActionPrediction(
                 action=action,
@@ -192,13 +264,15 @@ class RecoveryPredictor:
             )
             action_predictions[action.value] = act_pred
 
-            if net_exp_val > best_expected_val:
+            # Select best candidate action:
+            is_disallowed_retry = (attempts >= 3 and action in [RecoveryActionType.IMMEDIATE_RETRY, RecoveryActionType.DELAYED_RETRY])
+            if net_exp_val > best_expected_val and not is_disallowed_retry:
                 best_expected_val = net_exp_val
                 best_action = action
 
         # Opportunity Score calculation: E[V] * Efficiency Multiplier
-        eff_mult = 1.0 - (state.intervention_fatigue_score * 0.4)
-        opp_score = round(best_expected_val * eff_mult, 2)
+        eff_mult = max(0.1, 1.0 - (fatigue * 0.45))
+        opp_score = round(max(0.0, best_expected_val * eff_mult), 2)
 
         return ModelPredictions(
             prediction_id=f"pred_{uuid.uuid4().hex[:12]}",

@@ -131,3 +131,110 @@ def test_ml_trainer_evaluation():
     assert "roc_auc" in metrics
     assert "brier_score" in metrics
     assert 0.0 <= metrics["brier_score"] <= 1.0
+
+
+def test_recovery_propensity_decays_with_previous_attempts():
+    """Verify that increasing previous recovery attempts strictly decreases overall recovery propensity."""
+    from backend.schemas.context import CustomerHistorySummary, DecisionContext, MerchantPolicyContext
+    from backend.schemas.customer import CustomerProfile, CustomerState
+
+    propensities = []
+    delays = []
+
+    for attempts in [0, 1, 2, 3, 4]:
+        fatigue = min(1.0, attempts * 0.22)
+        event = NormalizedEvent(
+            event_id=f"evt_att_{attempts}",
+            customer_id="cust_multi_att",
+            event_type=EventType.PAYMENT_FAILED,
+            amount=4999.0,
+            payment_method="upi",
+            failure_category=FailureCategory.TRANSIENT_BANK_TIMEOUT,
+        )
+        ctx = DecisionContext(
+            context_id=f"ctx_att_{attempts}",
+            as_of_timestamp=datetime.now(timezone.utc),
+            current_event=event,
+            customer_profile=CustomerProfile(customer_id="cust_multi_att"),
+            customer_state=CustomerState(
+                customer_id="cust_multi_att",
+                total_transactions=10,
+                success_rate=0.8,
+                total_recovery_attempts=attempts,
+                consecutive_failures_count=attempts,
+                intervention_fatigue_score=fatigue,
+            ),
+            history_summary=CustomerHistorySummary(
+                previous_recovery_attempts=attempts,
+                consecutive_failures_count=attempts,
+                intervention_fatigue_score=fatigue,
+            ),
+            policy_context=MerchantPolicyContext(),
+            revenue_at_risk=4999.0,
+        )
+        preds = recovery_predictor.predict_actions(ctx)
+        propensities.append(preds.overall_recovery_propensity)
+        delays.append(preds.optimal_delay_minutes)
+
+    # Propensities should decay monotonically
+    for i in range(len(propensities) - 1):
+        assert propensities[i] > propensities[i + 1], f"Propensity did not decrease: {propensities}"
+
+    # Timing delay should increase with backoff
+    assert delays[0] == 30
+    assert delays[1] == 60
+    assert delays[2] == 120
+    assert delays[3] >= 1440
+
+
+def test_event_normalization_subscription_and_checkout_payloads():
+    """Verify normalizer handles subscription.charged.failed and checkout entities properly."""
+    from backend.services.normalization.normalizer import normalize_razorpay_event
+
+    # 1. Subscription charged failed
+    sub_payload = {
+        "id": "evt_sub_fail",
+        "event": "subscription.charged.failed",
+        "payload": {
+            "subscription": {
+                "entity": {
+                    "id": "sub_123",
+                    "customer_id": "cust_sub_test",
+                    "error_code": "MANDATE_REJECTED",
+                    "error_description": "Recurring mandate expired",
+                }
+            },
+            "payment": {
+                "entity": {
+                    "amount": 99900,
+                    "currency": "INR",
+                }
+            },
+        },
+    }
+    norm_sub = normalize_razorpay_event(sub_payload)
+    assert norm_sub.event_type == EventType.SUBSCRIPTION_PAYMENT_FAILED
+    assert norm_sub.failure_category == FailureCategory.MANDATE_REJECTED
+    assert norm_sub.amount == 999.0
+
+    # 2. Checkout abandoned entity
+    chk_payload = {
+        "id": "evt_chk_drop",
+        "event": "checkout.abandoned",
+        "payload": {
+            "checkout": {
+                "entity": {
+                    "id": "chk_789",
+                    "amount": 349900,
+                    "currency": "INR",
+                    "customer_id": "cust_chk_user",
+                }
+            }
+        },
+    }
+    norm_chk = normalize_razorpay_event(chk_payload)
+    assert norm_chk.event_type == EventType.CHECKOUT_ABANDONED
+    assert norm_chk.failure_category == FailureCategory.INACTIVITY_DROPOFF
+    assert norm_chk.amount == 3499.0
+    assert norm_chk.customer_id == "cust_chk_user"
+
