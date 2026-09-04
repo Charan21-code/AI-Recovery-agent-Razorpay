@@ -473,10 +473,10 @@ class VoiceRecoveryAgent:
 
         # ══ PRIORITY 9: Payment Link Request ══════════════════════════════════
         elif self._hit(speech_lower, [
-            "send link", "link bhej", "link bhejdo", "bhej do", "whatsapp link",
-            "pay now", "how to pay", "payment link do", "send payment link",
-            "link send karo", "mujhe link bhejo", "share link", "online pay karna hai",
-            "link chahiye", "payment karna hai"
+            "payment link", "send link", "link bhej", "link bhejdo", "bhej do", "whatsapp link",
+            "pay now", "pay right now", "how to pay", "payment link do", "send payment link",
+            "send me a payment link", "link on whatsapp", "link send karo", "mujhe link bhejo",
+            "share link", "online pay karna hai", "link chahiye", "payment karna hai", "link bhejo"
         ]):
             if session.payment_link_sent:
                 # Already sent — ask if received
