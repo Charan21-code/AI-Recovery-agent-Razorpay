@@ -8,6 +8,12 @@ from backend.services.voice.tools import voice_recovery_tools
 from backend.services.voice.agent import voice_recovery_agent
 
 
+@pytest.fixture(autouse=True)
+def mock_voice_llm(monkeypatch):
+    """Ensures unit tests validate deterministic offline logic without calling live LLM APIs."""
+    monkeypatch.setattr(voice_recovery_agent, "provider", "mock")
+
+
 def test_voice_tool_suite_operations():
     """Validates that all voice recovery tools execute and return expected schemas."""
     # 1. Status check
@@ -131,3 +137,195 @@ def test_voice_agent_payment_link_dispatch():
     tool_names = [tc.tool_name for tc in turn.tool_calls]
     assert "create_payment_link" in tool_names
     assert "link" in turn.content.lower() or "dispatched" in turn.content.lower()
+
+
+def test_voice_agent_greeting_identity_and_affirmative_link_flow():
+    """
+    Validates end-to-end multi-turn flow:
+    1. Greeting -> 2. Customer confirms identity ("Haan bol raha hoon")
+    -> 3. Customer accepts link offer ("Haan bhej do") -> 4. Acknowledges delivery ("Mil gaya")
+    -> 5. In-progress hold ("Wait karo pay kar raha hoon") -> 6. Completion claim ("Pay kar diya")
+    """
+    session = voice_recovery_agent.start_session(
+        customer_id="cust_multi_1",
+        payment_id="pay_multi_1",
+        language="hinglish",
+    )
+    assert session.last_agent_prompt_type == "greeting_identity"
+
+    # Step 1: User confirms identity
+    turn1 = voice_recovery_agent.process_turn(session.session_id, "Haan, main Rohan bol raha hoon.")
+    assert session.identity_confirmed is True
+    assert session.last_agent_prompt_type == "link_offered"
+    assert any(w in turn1.content.lower() for w in ["shukriya", "confirm", "payment", "link"])
+
+    # Step 2: User agrees affirmatively to receive link
+    turn2 = voice_recovery_agent.process_turn(session.session_id, "Haan theek hai, link bhej do.")
+    assert session.payment_link_sent is True
+    tool_names = [tc.tool_name for tc in turn2.tool_calls]
+    assert "create_payment_link" in tool_names
+    assert session.last_agent_prompt_type == "link_delivered_check"
+
+    # Step 3: User confirms delivery
+    turn3 = voice_recovery_agent.process_turn(session.session_id, "Haan mil gaya link!")
+    assert session.link_delivery_confirmed is True
+    assert any(w in turn3.content.lower() for w in ["badhiya", "line par", "wait", "complete"])
+
+    # Step 4: User states payment is in progress
+    turn4 = voice_recovery_agent.process_turn(session.session_id, "Ek minute ruko, pay kar raha hoon.")
+    assert session.payment_in_progress is True
+    assert any(w in turn4.content.lower() for w in ["aaram se", "koi jaldi nahi", "available", "line"])
+
+    # Step 5: User claims payment completed
+    turn5 = voice_recovery_agent.process_turn(session.session_id, "Maine pay kar diya hai.")
+    t5_tool_names = [tc.tool_name for tc in turn5.tool_calls]
+    assert "get_payment_status" in t5_tool_names
+
+
+def test_voice_agent_informational_queries():
+    """Validates responses to caller identity, amount, and payment method inquiries."""
+    session = voice_recovery_agent.start_session(
+        customer_id="cust_info_1",
+        payment_id="pay_info_1",
+        language="hinglish",
+    )
+
+    # 1. Caller identity
+    turn_id = voice_recovery_agent.process_turn(session.session_id, "Aap kaun bol rahe ho?")
+    assert "razorpay" in turn_id.content.lower()
+
+    # 2. Amount inquiry
+    turn_amt = voice_recovery_agent.process_turn(session.session_id, "Kitna amount pay karna hai?")
+    assert f"{session.amount:,.2f}" in turn_amt.content or "2,499" in turn_amt.content
+
+    # 3. Payment methods inquiry
+    turn_methods = voice_recovery_agent.process_turn(session.session_id, "Kaise pay kar sakte hain? Google Pay chalega?")
+    assert any(w in turn_methods.content.lower() for w in ["google pay", "phonepe", "upi", "card"])
+
+
+def test_voice_agent_fallback_rotation_no_stuck_loop():
+    """
+    Validates that offline/unrecognized turns do NOT repeat the identical response
+    consecutively and offer escalation after multiple failed turns.
+    """
+    session = voice_recovery_agent.start_session(
+        customer_id="cust_fall_1",
+        payment_id="pay_fall_1",
+        language="en",
+    )
+    # Turn 1: unrecognized
+    turn1 = voice_recovery_agent.process_turn(session.session_id, "Blue sky purple clouds")
+    assert session.consecutive_fallback_count == 1
+
+    # Turn 2: unrecognized - must NOT be identical to Turn 1
+    turn2 = voice_recovery_agent.process_turn(session.session_id, "Random gibberish words 123")
+    assert session.consecutive_fallback_count == 2
+    assert turn2.content != turn1.content
+
+    # Turn 3: unrecognized - triggers escalation offer
+    turn3 = voice_recovery_agent.process_turn(session.session_id, "Still speaking complete nonsense")
+    assert session.consecutive_fallback_count >= 3
+    assert any(w in turn3.content.lower() for w in ["specialist", "transfer", "callback"])
+
+
+def test_voice_agent_devanagari_intent_recognition():
+    """
+    Validates that speech transcribed in Devanagari script (from browser Web Speech API)
+    correctly routes to the same intent logic as Latin Hinglish.
+    """
+    # 1. Deduction claim in Devanagari
+    session1 = voice_recovery_agent.start_session(
+        customer_id="cust_dev_1",
+        payment_id="pay_dev_1",
+        language="hi",
+    )
+    turn_deduct = voice_recovery_agent.process_turn(session1.session_id, "अरे पैसे कट गए बैंक से!")
+    tool_names = [tc.tool_name for tc in turn_deduct.tool_calls]
+    assert "get_payment_status" in tool_names
+    assert session1.recorded_intent in ("DISPUTE_DEBITED", "PAYMENT_CAPTURED_CONFIRMED")
+
+    # 2. Security violation in Devanagari
+    session2 = voice_recovery_agent.start_session(
+        customer_id="cust_dev_2",
+        payment_id="pay_dev_2",
+        language="hi",
+    )
+    turn_sec = voice_recovery_agent.process_turn(session2.session_id, "मेरा ओटीपी 582910 है")
+    assert "⚠️" in turn_sec.content
+    assert any(w in turn_sec.content.lower() for w in ["rukiye", "stop", "kabhi", "fraud"])
+
+    # 3. Link request in Devanagari
+    session3 = voice_recovery_agent.start_session(
+        customer_id="cust_dev_3",
+        payment_id="pay_dev_3",
+        language="hi",
+    )
+    turn_link = voice_recovery_agent.process_turn(session3.session_id, "हाँ मुझे लिंक भेज दो")
+    tool_names_link = [tc.tool_name for tc in turn_link.tool_calls]
+    assert "create_payment_link" in tool_names_link
+    assert session3.payment_link_sent is True
+
+
+def test_voice_agent_max_link_resend_cap():
+    """
+    Validates that the agent caps link resends at max_link_resends (2)
+    and switches to alternative resolution (direct UPI ID / specialist)
+    rather than looping continuously.
+    """
+    session = voice_recovery_agent.start_session(
+        customer_id="cust_cap_1",
+        payment_id="pay_cap_1",
+        customer_phone="+919876543210",
+        language="hinglish",
+    )
+    assert session.link_resend_count == 0
+    assert session.max_link_resends == 2
+
+    # Attempt 1: First time asking for link
+    turn1 = voice_recovery_agent.process_turn(session.session_id, "Payment link bhej do.")
+    assert session.payment_link_sent is True
+    assert session.link_resend_count == 1
+    assert "create_payment_link" in [tc.tool_name for tc in turn1.tool_calls]
+
+    # Attempt 2: User says didn't receive link (1st resend)
+    turn2 = voice_recovery_agent.process_turn(session.session_id, "Nahi aaya link abhi tak.")
+    assert session.link_resend_count == 2
+    assert "create_payment_link" in [tc.tool_name for tc in turn2.tool_calls]
+
+    # Attempt 3: User says didn't receive link AGAIN (cap reached, must NOT resend link)
+    turn3 = voice_recovery_agent.process_turn(session.session_id, "Abhi bhi nahi aaya link.")
+    assert session.link_resend_count == 2  # capped at 2
+    tool_names_3 = [tc.tool_name for tc in turn3.tool_calls]
+    assert "create_payment_link" not in tool_names_3
+    # Must offer alternative resolution
+    assert any(w in turn3.content.lower() for w in ["upi", "specialist", "support", "transfer", "baar"])
+
+    # Attempt 4: User explicitly asks again (must still respect cap)
+    turn4 = voice_recovery_agent.process_turn(session.session_id, "Mujhe link bhejo dobara.")
+    assert session.link_resend_count == 2
+    assert "create_payment_link" not in [tc.tool_name for tc in turn4.tool_calls]
+    assert any(w in turn4.content.lower() for w in ["upi", "specialist", "support", "baar"])
+
+
+def test_voice_agent_gemini_action_execution():
+    """
+    Validates that Gemini tool commands (ACTION: <tool>) are parsed and executed correctly.
+    """
+    session = voice_recovery_agent.start_session(
+        customer_id="cust_gem_1",
+        payment_id="pay_gem_1",
+        language="hinglish",
+    )
+    raw_response = (
+        "ACTION: create_payment_link\n"
+        "Maine aapke registered mobile par Razorpay payment link bhej diya hai. Kripya check karein."
+    )
+    turn = voice_recovery_agent._execute_gemini_response(session, raw_response, "hinglish")
+    assert turn.role == "assistant"
+    assert "Maine aapke registered mobile" in turn.content
+    assert "ACTION:" not in turn.content
+    assert session.payment_link_sent is True
+    assert session.link_resend_count == 1
+    assert any(tc.tool_name == "create_payment_link" for tc in turn.tool_calls)
+
+

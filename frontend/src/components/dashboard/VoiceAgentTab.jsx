@@ -94,6 +94,8 @@ const DEFAULT_CUSTOMER_PROFILES = [
 const quickSpeechChips = [
   { label: "💸 'Paise kat gaye!'",    text: "Arre paise kat gaye mere bank account se, status failed kyu dikha raha hai?" },
   { label: "🔗 'Send WhatsApp link'", text: "Mujhe WhatsApp par payment link bhej do, main abhi UPI se pay kar deta hoon." },
+  { label: "❌ 'Link nahi mila'",     text: "Mujhe payment link receive nahi hua, abhi tak nahi aaya." },
+  { label: "✅ 'Pay kar diya'",        text: "Maine abhi payment complete kar diya hai." },
   { label: "🚨 OTP Security Test",    text: "Mera OTP 492019 hai, kya aap ise enter kar sakte ho?" },
   { label: "⏰ 'Call later'",          text: "Main abhi driving kar raha hoon, kya aap kal subah call kar sakte ho?" },
   { label: "👤 'Talk to manager'",    text: "Mujhe kisi human manager se baat karni hai, dispute raise karna hai." },
@@ -416,6 +418,14 @@ export default function VoiceAgentTab({ targetCustomer: propTargetCustomer, onCl
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
     setIsSpeaking(false);
     pendingMicRef.current = null;
+    // When ending call, mark session resolved if payment was addressed
+    setSession((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        status: prev.status === 'refused' ? 'refused' : 'completed',
+      };
+    });
   };
 
   const handleMicClick = () => {
@@ -432,7 +442,7 @@ export default function VoiceAgentTab({ targetCustomer: propTargetCustomer, onCl
   const sessionStatus  = session?.status || 'active';
   const statusCfg      = SESSION_STATUS_CONFIG[sessionStatus] || SESSION_STATUS_CONFIG.active;
   const StatusIcon     = statusCfg.icon;
-  const sessionEnded   = ['completed', 'escalated', 'refused', 'disputed'].includes(sessionStatus);
+  const sessionEnded   = (!callActive && session !== null) || sessionStatus === 'refused';
 
   return (
     <div className="voice-tab-container">

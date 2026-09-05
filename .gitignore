@@ -46,3 +46,7 @@ logs/
 # Scratch & temporary artifacts
 scratch/
 tmp/
+
+# Demo and recording scripts
+DEMO_VIDEO_SCRIPT.md
+script.md

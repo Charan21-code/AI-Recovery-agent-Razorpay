@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { 
-  ArrowRight, 
-  Activity, 
-  ShieldCheck, 
-  Bot, 
-  Zap, 
-  Target, 
+import {
+  ArrowRight,
+  Activity,
+  ShieldCheck,
+  Bot,
+  Zap,
+  Target,
   LineChart,
   BrainCircuit,
   Lock,
@@ -22,7 +22,7 @@ import AnimatedCounter from './AnimatedCounter';
 const LandingPage = () => {
   const navigate = useNavigate();
   const [atRiskGmv, setAtRiskGmv] = useState(500000);
-  
+
   const recoveryRate = 0.707;
   const recoveredRevenue = atRiskGmv * recoveryRate;
   const executionCost = recoveredRevenue * 0.016;
@@ -35,7 +35,7 @@ const LandingPage = () => {
         <div className="hero-canvas-wrapper">
           <HeroCanvas />
         </div>
-        
+
         <div className="hero-content">
           <AnimatedSection delay={0.1}>
             <div className="hero-badge-strip">
@@ -43,20 +43,20 @@ const LandingPage = () => {
               <div className="badge badge-mint"><ShieldCheck size={14} /> RAZORPAY TEST GATEWAY CERTIFIED</div>
             </div>
           </AnimatedSection>
-          
+
           <AnimatedSection delay={0.2}>
             <h1 className="hero-title">
-              Recover <span className="text-gradient">70%+</span> of At-Risk Revenue <br/>
+              Recover <span className="text-gradient">70%+</span> of At-Risk Revenue <br />
               With Autonomous <span className="text-gradient">AI Agents</span>
             </h1>
           </AnimatedSection>
-          
+
           <AnimatedSection delay={0.3}>
             <p className="hero-subtitle">
               An end-to-end intelligent recovery engine that replaces dumb payment retries with calibrated ML propensity scoring, deterministic merchant policy guardrails, and multilingual autonomous voice agents.
             </p>
           </AnimatedSection>
-          
+
           <AnimatedSection delay={0.4}>
             <div className="hero-cta-group">
               <button className="btn btn-primary btn-large" onClick={() => navigate('/console')}>
@@ -67,7 +67,7 @@ const LandingPage = () => {
               </button>
             </div>
           </AnimatedSection>
-          
+
           <AnimatedSection delay={0.5}>
             <div className="hero-stats-banner">
               <div className="hero-stat-item">
@@ -98,7 +98,7 @@ const LandingPage = () => {
           <h2 className="section-title">Engineered For Zero Friction & Maximum Yield</h2>
           <p className="section-subtitle">How autonomous intelligence outperforms conventional rule-based dunning tools.</p>
         </AnimatedSection>
-        
+
         <div className="steps-grid">
           <AnimatedSection delay={0.1}>
             <div className="step-card">
@@ -110,7 +110,7 @@ const LandingPage = () => {
             </div>
             <div className="step-connector"><ChevronRight size={32} /></div>
           </AnimatedSection>
-          
+
           <AnimatedSection delay={0.3}>
             <div className="step-card">
               <div className="step-number step-2"><BrainCircuit size={28} /></div>
@@ -121,7 +121,7 @@ const LandingPage = () => {
             </div>
             <div className="step-connector"><ChevronRight size={32} /></div>
           </AnimatedSection>
-          
+
           <AnimatedSection delay={0.5}>
             <div className="step-card">
               <div className="step-number step-3"><Bot size={28} /></div>
@@ -146,7 +146,7 @@ const LandingPage = () => {
               Multi-turn conversational voice calling in English, Hindi, and Hinglish. Checks live gateway status in real-time, addresses customer concerns, and dispatches 1-click WhatsApp payment links instantly. Never asks for credentials.
             </p>
           </AnimatedSection>
-          
+
           <AnimatedSection delay={0.2} className="bento-card">
             <div className="bento-icon-box cyan">
               <ShieldCheck size={26} />
@@ -156,7 +156,7 @@ const LandingPage = () => {
               AI suggestions are never executed blindly. A non-bypassable policy engine enforces strict regulatory and brand-protection constraints like opt-out filtering and max-retry exhaustion.
             </p>
           </AnimatedSection>
-          
+
           <AnimatedSection delay={0.3} className="bento-card">
             <div className="bento-icon-box mint">
               <LineChart size={26} />
@@ -179,72 +179,72 @@ const LandingPage = () => {
               <p className="roi-subtitle">
                 Enter your monthly at-risk transaction volume to see projected revenue recovered by the AI engine.
               </p>
-              
+
               <div className="calculator-controls">
                 <div className="control-group">
                   <div className="control-label-row">
                     <span>Monthly Failed / At-Risk GMV</span>
-                    <span className="control-value">₹{(atRiskGmv/100000).toFixed(1)} Lakhs</span>
+                    <span className="control-value">₹{(atRiskGmv / 100000).toFixed(1)} Lakhs</span>
                   </div>
-                  <input 
-                    type="range" 
-                    className="roi-slider" 
-                    min="100000" 
-                    max="20000000" 
+                  <input
+                    type="range"
+                    className="roi-slider"
+                    min="100000"
+                    max="20000000"
                     step="100000"
                     value={atRiskGmv}
                     onChange={(e) => setAtRiskGmv(Number(e.target.value))}
                   />
                   <div className="slider-ticks">
                     <span>₹1L</span>
-                    <span>₹10L</span>
+                    <span>₹50L</span>
                     <span>₹1Cr</span>
                     <span>₹2Cr</span>
                   </div>
                 </div>
-                
+
                 <div className="control-group">
                   <div className="control-label-row">
                     <span>AI Recovery Rate Model</span>
                     <span className="control-value">70.7%</span>
                   </div>
-                  <input 
-                    type="range" 
-                    className="roi-slider" 
-                    min="0" max="100" 
-                    value="70.7" 
+                  <input
+                    type="range"
+                    className="roi-slider"
+                    min="0" max="100"
+                    value="70.7"
                     readOnly
                     style={{ background: `linear-gradient(90deg, var(--violet) 70.7%, rgba(255,255,255,0.1) 70.7%)` }}
                   />
                 </div>
               </div>
             </div>
-            
+
             <div className="roi-results-card">
               <div className="roi-card-tag">PROJECTED MONTHLY IMPACT</div>
-              
+
               <div className="roi-result-row primary">
                 <span className="result-label">Recovered Revenue</span>
                 <span className="result-amount">₹{recoveredRevenue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
               </div>
-              
+
               <div className="roi-result-row">
                 <span className="result-label">AI Execution Cost (~1.6%)</span>
                 <span className="result-amount" style={{ color: 'var(--text-muted)' }}>₹{executionCost.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
               </div>
-              
+
               <div className="roi-divider"></div>
-              
+
               <div className="roi-result-row highlight">
                 <span className="result-label" style={{ color: '#ffffff', fontWeight: 600 }}>Net Profit Recovered</span>
                 <span className="result-amount">₹{netProfit.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
               </div>
-              
+
               <div className="roi-badge-box">
                 <div className="badge badge-mint">62.5X ROI MULTIPLE</div>
                 <div className="badge badge-violet">ZERO FIXED OVERHEAD</div>
               </div>
-              
+
               <button className="btn btn-primary btn-block" style={{ marginTop: '1rem' }} onClick={() => navigate('/console')}>
                 Start Recovering Now <ArrowRight size={16} />
               </button>
@@ -259,7 +259,7 @@ const LandingPage = () => {
           <h2 className="section-title">How Razorpay Recovery AI Compares</h2>
           <p className="section-subtitle">A side-by-side comparison with legacy alternatives.</p>
         </AnimatedSection>
-        
+
         <div className="comparison-scroll">
           <AnimatedSection delay={0.1}>
             <div className="comparison-card muted">
@@ -282,7 +282,7 @@ const LandingPage = () => {
               </div>
             </div>
           </AnimatedSection>
-          
+
           <AnimatedSection delay={0.2}>
             <div className="comparison-card featured">
               <div className="badge badge-violet" style={{ width: 'fit-content', marginBottom: '-10px' }}>RECOMMENDED</div>
